@@ -32,11 +32,15 @@ helm/certs/
 *.swp
 *.swo
 
+# OS
+.DS_Store
+Thumbs.db
+
 # Helm chart packages
 *.tgz
 
-# Codegraph helper
-.codegraph
-
-# Container image tar
+# Container image tar (if you save locally)
 *.tar
+
+# Local code intelligence (not for public repo)
+.codegraph/
