@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package replicamanager;
+option go_package = "replicamanager/v1";
+
+service ReplicaService {
+  rpc GetReplicaCount(GetReplicaCountRequest) returns (GetReplicaCountResponse) {}
+  rpc ListReplicas(ListReplicasRequest) returns (ListReplicasResponse) {}
+  rpc SetReplicas(SetReplicasCountRequest) returns (Empty) {}
+  rpc HealthCheck(Empty) returns (HealthCheckResponse) {}
+}
+
+message Replica {
+  int32 desired = 3; // spec.replicas
+  int32 ready = 4; //status.readyReplicas
+  int32 available = 6; // status.availableReplicas
+}
+
+message GetReplicaCountRequest {
+  string namespace = 1;
+  string name = 2;
+}
+
+message GetReplicaCountResponse {
+  string namespace = 1;
+  string name = 2;
+  Replica replica = 3;
+}
+
+message ListReplicasRequest {
+  string namespace = 1;
+}
+
+message ListReplicasResponse {
+  string namespace = 1;
+  repeated Replica replicas = 2;
+}
+
+message SetReplicasCountRequest {
+  string namespace = 1;
+  string name = 2;
+  int32 desired = 3; // spec.replicas (ie desired)
+}
+
+message HealthCheckResponse {
+  bool healthy = 1;
+}
+
+message Empty {}

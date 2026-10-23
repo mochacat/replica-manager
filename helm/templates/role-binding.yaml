@@ -1,0 +1,16 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: replica-manager
+  labels:
+    app.kubernetes.io/name: replica-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: replica-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name | default "replica-manager" }}
+    namespace: {{ .Values.namespace }}
+{{- end }}

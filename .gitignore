@@ -1,0 +1,42 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of go coverage
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# TLS certificates (generated, PoC only)
+certs/*.pem
+certs/*.crt
+certs/*.srl
+# Staged into the helm chart for Secret creation
+helm/certs/
+
+# KIND cluster config / kubeconfig cache
+.kind/
+.kubeconfig
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Helm chart packages
+*.tgz
+
+# Codegraph helper
+.codegraph
+
+# Container image tar
+*.tar

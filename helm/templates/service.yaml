@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: replica-manager
+  labels:
+    app.kubernetes.io/name: replica-manager
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: replica-manager
+  ports:
+    - protocol: TCP
+      port: {{ .Values.service.port }}
+      targetPort: {{ .Values.service.targetPort }}
+      name: grpc

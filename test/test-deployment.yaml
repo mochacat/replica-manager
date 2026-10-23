@@ -1,0 +1,36 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: replica-manager-test
+  labels:
+    app.kubernetes.io/name: replica-manager-test
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 60
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: replica-manager-test
+    spec:
+      restartPolicy: Never
+      serviceAccountName: replica-manager
+      containers:
+        - image: replica-manager-test:latest
+          imagePullPolicy: IfNotPresent
+          name: test-runner
+          env:
+            - name: CERT_DIR
+              value: "/app/certs"
+            - name: SERVER_ADDR
+              value: "replica-manager.replica-manager-test.svc.cluster.local:6443"
+            - name: NAMESPACE
+              value: "replica-manager-test"
+          volumeMounts:
+            - name: certs
+              mountPath: /app/certs
+              readOnly: true
+      volumes:
+        - name: certs
+          secret:
+            secretName: replica-manager-certs
+            defaultMode: 0444

@@ -1,0 +1,56 @@
+# Number of replicas for the replica-manager Deployment
+replicaCount: 1
+
+image:
+  repository: replica-manager
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Annotations to add to the pod template
+podAnnotations: {}
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 250m
+    memory: 128Mi
+
+serviceAccount:
+  create: true
+  name: ""
+
+service:
+  port: 6443
+  targetPort: 8443
+
+namespace: default
+
+rbac:
+  create: true
+
+# Integration test settings (used by test-job.yaml)
+integration:
+  image:
+    repository: replica-manager-test
+    tag: latest
+
+# mTLS certificates.
+#
+# Replica Manager is certificate-agnostic: you bring the certs. The chart does
+# NOT bundle key material by default. Provide a Secret with the keys below and
+# reference it with `secretName`.
+#
+#   ca.pem, server-public.pem, server-private.pem,
+#   client-public.pem, client-private.pem
+#
+# The Secret is created by whatever tooling you already use (cert-manager,
+# Vault, KMS, an internal CA, a manual `kubectl create secret`, ...). The chart
+# only mounts it.
+#
+# For local dev only, set `create: true` to render a Secret from the
+# pre-generated dev certs staged in helm/certs/ by `make helm-certs`.
+certs:
+  create: false
+  secretName: replica-manager-certs

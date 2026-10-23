@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: replica-manager
+  labels:
+    app.kubernetes.io/name: replica-manager
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: replica-manager
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        app.kubernetes.io/name: replica-manager
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name | default "replica-manager" }}
+      containers:
+        - image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          name: replica-manager
+          ports:
+            - name: grpc
+              containerPort: 8443
+              protocol: TCP
+          volumeMounts:
+            - name: certs
+              mountPath: /app/certs
+              readOnly: true
+          livenessProbe:
+            grpc:
+              port: 8444
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            grpc:
+              port: 8444
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          env:
+            - name: CERT_DIR
+              value: "/app/certs"
+            - name: LISTEN_ADDR
+              value: "0.0.0.0:8443"
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: certs
+          secret:
+            secretName: {{ .Values.certs.secretName | default "replica-manager-certs" }}
+            defaultMode: 0444
