@@ -1,5 +1,4 @@
 .git/
 bin/
-test/
 helm/
 *.md

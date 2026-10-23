@@ -55,7 +55,7 @@ deploy: kind-up build helm-certs ## Deploy Helm chart to cluster (dev certs)
 TEST_IMAGE := $(IMAGE)-test
 
 build-test: ## Build integration test image
-	docker build -t $(TEST_IMAGE):latest -f test/Dockerfile.test --ignorefile test/.dockerignore .
+	docker build -t $(TEST_IMAGE):latest -f test/Dockerfile.test .
 
 deploy-test: build helm-certs ## Deploy to ephemeral test namespace (dev certs)
 	@kind load docker-image $(IMAGE):latest --name $(KIND_CLUSTER) 2>/dev/null || true
