@@ -1,0 +1,3 @@
+# Re-include Dockerfile.test — the root *.test pattern would otherwise
+# ignore it (it matches the extension glob).
+!Dockerfile.test

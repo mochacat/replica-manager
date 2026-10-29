@@ -1,0 +1,21 @@
+# Integration test runner — compiles the test binary ONCE at image build time
+# so the running pod executes an already-built binary instead of recompiling
+# Go on every attempt (which caused cold-start timeouts and per-run memory spikes).
+FROM golang:1.26-bookworm AS builder
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Precompile the integration test binary (-c produces a single static-ish binary).
+RUN go test -c -o /test.bin ./integration/
+
+# Runtime — distroless base ships CA certs for outbound TLS (K8s API + gRPC mTLS).
+FROM gcr.io/distroless/base-debian12
+
+COPY --from=builder /test.bin /test.bin
+
+ENTRYPOINT ["/test.bin", "-test.v", "-test.count=1"]
