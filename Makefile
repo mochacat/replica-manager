@@ -65,11 +65,15 @@ deploy-test-job: build-test helm-certs ## Deploy integration test Job + fixtures
 	@kind load docker-image $(TEST_IMAGE):latest --name $(KIND_CLUSTER) 2>/dev/null || true
 	-kubectl delete job --namespace replica-manager-test replica-manager-test 2>/dev/null || true
 	kubectl apply --namespace replica-manager-test -f test/test-deployment.yaml
+	# Create a separate namespace for the workloads the server controls. The server
+	# runs in replica-manager-test but must be able to manage Deployments in any
+	# namespace — this proves the cross-namespace path end-to-end.
+	kubectl create namespace replica-manager-workloads 2>/dev/null || true
 	# Deploy fixtures the integration test targets (SetReplicas/GetReplicaCount)
-	kubectl apply --namespace replica-manager-test -f test/fixtures/podinfo-deployment.yaml
+	kubectl apply --namespace replica-manager-workloads -f test/fixtures/podinfo-deployment.yaml
 	# Unmanaged fixture (no replicamanager/replicas annotation) used to verify the
 	# reconciler leaves non-managed Deployments alone.
-	kubectl apply --namespace replica-manager-test -f test/fixtures/unmanaged-deployment.yaml
+	kubectl apply --namespace replica-manager-workloads -f test/fixtures/unmanaged-deployment.yaml
 
 # Poll the test Job pod until it terminates (exit code 0 or non-zero).
 # Uses the job-name label that K8s automatically sets on Job pods.
@@ -115,3 +119,4 @@ clean: ## Tear down cluster, remove binaries, clean certs and test artifacts
 	-rm -rf $(BIN) certs/ helm/certs/
 	-helm delete --namespace replica-manager-test $(HELM_RELEASE) 2>/dev/null || true
 	-kubectl delete namespace replica-manager-test 2>/dev/null || true
+	-kubectl delete namespace replica-manager-workloads 2>/dev/null || true

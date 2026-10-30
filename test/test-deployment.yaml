@@ -24,7 +24,7 @@ spec:
             - name: SERVER_ADDR
               value: "replica-manager.replica-manager-test.svc.cluster.local:6443"
             - name: NAMESPACE
-              value: "replica-manager-test"
+              value: "replica-manager-workloads"
           volumeMounts:
             - name: certs
               mountPath: /app/certs
