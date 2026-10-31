@@ -448,6 +448,65 @@ We are using Role and RoleBinding to manage permissions on the server. We're usi
 
 We should also update the NetworkPolicy to allow the server to talk to the API server, and the API server to talk to the server.
 
+#### Optional replica policy (embedded OPA, no CRD)
+
+An additional, **opt-in** security layer that constrains the replica counts the
+controller will actually apply. It is designed for environments where writers
+are partially trusted or fully autonomous (infra agents, automation, service
+accounts) and a bad actor — or a typo — could otherwise push a Deployment to a
+ridiculous replica count.
+
+Security model. The policy is **baked into the container image** and read at
+startup. Nothing in the cluster can modify it — there is no writable policy
+object to tamper with, which is the point. This is what makes the layer
+tamper-resistant against insiders who already have `patch deploymments`
+permission: the bounds the reconciler trusts are *not* stored in the cluster.
+
+Design rules (confirmed):
+
+* **Lightweight**: no CRD, no admission webhook, no second container. Policy
+  hosts *inside* the existing process via `github.com/open-policy-agent/opa/rego`
+  embedded as a library. One `.rego` file, compiled once at startup, reused for
+  every evaluation.
+* **Opt-in by default**: disabled unless `REPLICA_POLICY_ENABLED=true` is set.
+  When disabled, behavior is byte-for-byte today's. When enabled, a policy that
+  fails to compile is a **fatal startup error** — we never run a "secure" mode
+  silently without policy.
+* **Single global policy, cross-namespace via rules**: one policy applies to
+  every namespace the controller manages; per-namespace bounds are expressed as
+  *rules inside that one immutable file* (e.g. `allow namespace == "prod" and
+  input.desired <= 10`), not as separate mutable per-namespace objects.
+* **Enforced at two chokepoints from one implementation** (single source of
+  truth via a shared `internal/policy` package):
+  * gRPC handler `SetReplicas` — rejects an out-of-policy `desired` with a clear
+    gRPC error, synchronously, so legitimate-but-mistaken callers hear about it
+    immediately.
+  * Reconciler — re-checks the annotation value against the *same* policy before
+    patching `spec.replicas`. This is the tamper-proof backstop: even if an
+    insider edits the `replicamanager/replicas` annotation directly (bypassing
+    the handler), the reconciler refuses to apply an out-of-policy count.
+* **Above max → strict refuse, never clamp**. This guards the typo-overflow
+  case (an operator means `10`, types `1000`). Clamping to a soft max would
+  still materialize `max` pods the operator never wanted; refusing scales
+  nothing and surfaces a loud error instead. Applies in both handler and
+  reconciler.
+* **Below min → refuse in the handler; reconciler refuses but does NOT force
+  replicas back up.** Auto-rising replicas to satisfy min can fight a
+  legitimate emergency scale-down, so the reconciler never force-raises; it
+  logs and leaves `spec.replicas` untouched.
+* **Violations are loud**: structured `ERROR`/`WARN` logs at both layers
+  identifying the deployment, requested vs. allowed, and the offending rule.
+
+Policy evaluation shape. Rego receives an `input` document such as
+`{"namespace","name","desired","current","min","max"}` and returns an `allow`
+decision. Bounds (`min`/`max`) come from the policy itself (constants or
+per-namespace rules) — the caller cannot supply them.
+
+Baking into the image. The policy file is embedded at build time via
+`go:embed` and/or `COPY` into the Docker image at `/app/policy`. No runtime
+mount; the bytes are fixed by the image. Changing policy requires a rebuild and
+redeploy, which is the deliberate tradeoff for tamper-resistance.
+
 ### Observability
 
 <!-- Health check gRPC or HTTP endpoint. Structured logging. Metrics (replica count, reconciliation runs, cache hits/misses). -->

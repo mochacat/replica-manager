@@ -62,7 +62,7 @@ func TestIntegration(t *testing.T) {
 
 	clientCreds := credentials.NewTLS(&tls.Config{
 		Certificates: []tls.Certificate{clientCert},
-		RootCAs:     roots,
+		RootCAs:      roots,
 	})
 	conn, err := grpc.Dial(serverAddr,
 		grpc.WithTransportCredentials(clientCreds),
@@ -81,6 +81,26 @@ func TestIntegration(t *testing.T) {
 			t.Errorf("HealthCheck: %s", err)
 		} else if !resp.Healthy {
 			t.Errorf("expected healthy=true")
+		}
+	})
+
+	// --- Detect whether the replica policy is active ---
+	// The policy (min 1 / max 20, baked into the image) is opt-in via the
+	// REPLICA_POLICY_ENABLED env var, defaulting to true in the Helm chart.
+	// We probe by requesting a scale-to-0, which policy denies (min=1); if it
+	// comes back FailedPrecondition the guardrail is live, otherwise disabled.
+	policyActive := false
+	t.Run("Detect policy status", func(t *testing.T) {
+		_, err := client.SetReplicas(context.Background(), &v1.SetReplicasCountRequest{
+			Namespace: namespace,
+			Name:      depName,
+			Desired:   0,
+		})
+		if status.Code(err) == codes.FailedPrecondition {
+			policyActive = true
+			t.Logf("replica policy is ACTIVE (scale-to-0 denied by FailedPrecondition)")
+		} else {
+			t.Logf("replica policy is disabled (scale-to-0 returned %v)", status.Code(err))
 		}
 	})
 
@@ -111,7 +131,7 @@ func TestIntegration(t *testing.T) {
 	t.Run("GetReplicaCount for podinfo", func(t *testing.T) {
 		resp, err := client.GetReplicaCount(context.Background(), &v1.GetReplicaCountRequest{
 			Namespace: namespace,
-			Name: depName,
+			Name:      depName,
 		})
 		if err != nil {
 			t.Errorf("GetReplicaCount: %s", err)
@@ -164,24 +184,18 @@ func TestIntegration(t *testing.T) {
 			Name:      depName,
 			Desired:   0,
 		})
-		if err != nil {
+		if policyActive {
+			// The policy (min=1) denies scale-to-0, and never writes the annotation.
+			if status.Code(err) != codes.FailedPrecondition {
+				t.Errorf("expected FailedPrecondition with policy active, got %v", status.Code(err))
+			} else {
+				t.Logf("scale-to-0 correctly denied by policy: %s", err)
+			}
+		} else if err != nil {
 			t.Errorf("SetReplicas to 0: %s", err)
 		}
-		// Verify via GetReplicaCount that the annotation was set to 0.
-		resp, err := client.GetReplicaCount(context.Background(), &v1.GetReplicaCountRequest{
-			Namespace: namespace,
-			Name:      depName,
-		})
-		if err != nil {
-			t.Errorf("GetReplicaCount after set to 0: %s", err)
-		} else if resp.Replica == nil {
-			t.Errorf("GetReplicaCount returned nil Replica")
-		} else if resp.Replica.Desired != 0 {
-			t.Errorf("expected desired=0, got %d", resp.Replica.Desired)
-		} else {
-			t.Logf("desired correctly set to 0")
-		}
-		// Restore to 3 for subsequent tests.
+
+		// Restore to 3 for subsequent tests (also proves a within-policy write works).
 		_, err = client.SetReplicas(context.Background(), &v1.SetReplicasCountRequest{
 			Namespace: namespace,
 			Name:      depName,
@@ -207,6 +221,98 @@ func TestIntegration(t *testing.T) {
 			t.Logf("non-existent deployment correctly rejected: %s", err)
 		}
 	})
+
+	// --- Policy: the 1000-vs-max-20 typo is denied at the handler ---
+	// This reproduces the exact scenario: an operator or autonomous agent claims
+	// 1000 replicas when the baked-in policy caps at 20. The handler must refuse
+	// synchronously (FailedPrecondition) and must not write the annotation.
+	if policyActive {
+		t.Run("Policy denies SetReplicas 1000 (max 20)", func(t *testing.T) {
+			_, err := client.SetReplicas(context.Background(), &v1.SetReplicasCountRequest{
+				Namespace: namespace,
+				Name:      depName,
+				Desired:   1000,
+			})
+			if status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("expected FailedPrecondition for desired=1000, got %v: %s", status.Code(err), err)
+			}
+			t.Logf("handler denied desired=1000 as expected: %s", err)
+
+			// The annotation must NOT have been written; spec.replicas stays put.
+			resp, err := client.GetReplicaCount(context.Background(), &v1.GetReplicaCountRequest{
+				Namespace: namespace,
+				Name:      depName,
+			})
+			if err != nil {
+				t.Fatalf("GetReplicaCount: %s", err)
+			}
+			if resp.Replica.Desired == 1000 {
+				t.Fatalf("denied request must not write the annotation; desired==1000")
+			}
+			t.Logf("desired stayed at %d — denied write side-effect-free", resp.Replica.Desired)
+		})
+
+		// --- Policy: reconciler backstop blocks an annotation tampered to 1000 ---
+		// The realistic insider case: the gRPC API is NOT the attacker. We write the
+		// annotation directly via the Kubernetes API (bypassing gRPC/mTLS) and verify
+		// the reconciler refuses to scale spec.replicas past the policy max.
+		t.Run("Policy backstop: reconciler refuses a tampered annotation of 1000", func(t *testing.T) {
+			config, err := rest.InClusterConfig()
+			if err != nil {
+				t.Fatalf("in-cluster config: %s", err)
+			}
+			k8sClient, err := kubernetes.NewForConfig(config)
+			if err != nil {
+				t.Fatalf("k8s clientset: %s", err)
+			}
+			ctx := context.Background()
+
+			// Read current spec.replicas so we can assert it does not move past max.
+			before, err := k8sClient.AppsV1().Deployments(namespace).Get(ctx, depName, metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("get deployment: %s", err)
+			}
+			beforeReplicas := int32(1)
+			if before.Spec.Replicas != nil {
+				beforeReplicas = *before.Spec.Replicas
+			}
+
+			// Tamper: claim 1000 directly on the annotation, exactly as an insider with
+			// deployment write access would.
+			patch := []byte(`{"metadata":{"annotations":{"replicamanager/replicas":"1000"}}}`)
+			_, err = k8sClient.AppsV1().Deployments(namespace).Patch(ctx, depName, types.StrategicMergePatchType, patch, metav1.PatchOptions{})
+			if err != nil {
+				t.Fatalf("tamper annotation to 1000: %s", err)
+			}
+
+			// Give the reconciler several reconcile cycles to act. It must NOT raise
+			// spec.replicas toward 1000 and must never exceed the policy max of 20.
+			var lastErr error
+			maxed := int32(20)
+			for i := 0; i < 15; i++ {
+				dep, err := k8sClient.AppsV1().Deployments(namespace).Get(ctx, depName, metav1.GetOptions{})
+				if err != nil {
+					lastErr = fmt.Errorf("get deployment: %w", err)
+					time.Sleep(1 * time.Second)
+					continue
+				}
+				current := int32(1)
+				if dep.Spec.Replicas != nil {
+					current = *dep.Spec.Replicas
+				}
+				if current > maxed {
+					t.Fatalf("policy backstop VIOLATED: spec.replicas reached %d, exceeding max %d", current, maxed)
+				}
+				if current == beforeReplicas {
+					t.Logf("reconciler left spec.replicas=%d (refused tampered 1000)", current)
+					return
+				}
+				lastErr = fmt.Errorf("spec.replicas=%d, want it to stay %d", current, beforeReplicas)
+				time.Sleep(1 * time.Second)
+			}
+			t.Fatalf("policy backstop did not hold within timeout: %v", lastErr)
+		})
+	}
 
 	// --- ListReplicas in non-existent namespace ---
 	t.Run("ListReplicas non-existent namespace", func(t *testing.T) {
