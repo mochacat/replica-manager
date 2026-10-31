@@ -48,6 +48,8 @@ spec:
               value: "/app/certs"
             - name: LISTEN_ADDR
               value: "0.0.0.0:8443"
+            - name: REPLICA_POLICY_ENABLED
+              value: {{ .Values.policy.enabled | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
