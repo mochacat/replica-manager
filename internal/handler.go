@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1 "github.com/mochacat/replica-manager/api/replicamanager/v1"
+	"github.com/mochacat/replica-manager/internal/policy"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -41,6 +42,7 @@ type handler struct {
 	v1.UnimplementedReplicaServiceServer
 	client client.Client
 	ready  *atomic.Bool
+	policy *policy.Policy
 }
 
 func (s *handler) GetReplicaCount(ctx context.Context, req *v1.GetReplicaCountRequest) (*v1.GetReplicaCountResponse, error) {
@@ -112,6 +114,34 @@ func (s *handler) SetReplicas(ctx context.Context, req *v1.SetReplicasCountReque
 	var dep appsv1.Deployment
 	if err := s.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &dep); err != nil {
 		return nil, status.Error(codes.NotFound, "deployment not found")
+	}
+
+	// Optional policy guardrail: reject a SetReplicas the policy would not
+	// allow, synchronously, so the caller hears about it immediately. The
+	// reconciler re-checks the same policy before patching spec.replicas, so
+	// this is consistent even if someone bypasses the API.
+	if s.policy != nil {
+		current := int32(1)
+		if dep.Spec.Replicas != nil {
+			current = *dep.Spec.Replicas
+		}
+		res, err := s.policy.Evaluate(ctx, policy.Input{
+			Namespace: namespace,
+			Name:      name,
+			Desired:   desired,
+			Current:   current,
+		})
+		if err != nil {
+			slog.Error("policy evaluation failed, refusing SetReplicas",
+				"namespace", namespace, "name", name, "error", err)
+			return nil, status.Error(codes.Internal, "policy evaluation failed")
+		}
+		if !res.Allowed {
+			slog.Warn("SetReplicas denied by policy",
+				"namespace", namespace, "name", name, "desired", desired, "reason", res.Reason)
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"set replicas denied by policy: %s", res.Reason)
+		}
 	}
 
 	// Only patch the annotation — the reconciler will update spec.replicas.

@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	v1 "github.com/mochacat/replica-manager/api/replicamanager/v1"
+	"github.com/mochacat/replica-manager/internal/policy"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/testing/protocmp"
@@ -219,11 +220,11 @@ func TestHandler_SetReplicas(t *testing.T) {
 			code: codes.NotFound,
 		},
 		{
-			name: "set desired via annotation",
-			objs: []runtime.Object{newDeployment("foo", "bar", 1, "", 1, 1)},
-			req:  &v1.SetReplicasCountRequest{Namespace: "foo", Name: "bar", Desired: 5},
+			name:     "set desired via annotation",
+			objs:     []runtime.Object{newDeployment("foo", "bar", 1, "", 1, 1)},
+			req:      &v1.SetReplicasCountRequest{Namespace: "foo", Name: "bar", Desired: 5},
 			expected: &v1.Empty{},
-			code: codes.OK,
+			code:     codes.OK,
 			wantAnnot: func(t *testing.T, c client.Client) {
 				var dep appsv1.Deployment
 				if err := c.Get(context.Background(), types.NamespacedName{Namespace: "foo", Name: "bar"}, &dep); err != nil {
@@ -245,11 +246,11 @@ func TestHandler_SetReplicas(t *testing.T) {
 			},
 		},
 		{
-			name: "set desired to 0",
-			objs: []runtime.Object{newDeployment("foo", "bar", 2, "", 2, 2)},
-			req:  &v1.SetReplicasCountRequest{Namespace: "foo", Name: "bar", Desired: 0},
+			name:     "set desired to 0",
+			objs:     []runtime.Object{newDeployment("foo", "bar", 2, "", 2, 2)},
+			req:      &v1.SetReplicasCountRequest{Namespace: "foo", Name: "bar", Desired: 0},
 			expected: &v1.Empty{},
-			code: codes.OK,
+			code:     codes.OK,
 			wantAnnot: func(t *testing.T, c client.Client) {
 				var dep appsv1.Deployment
 				if err := c.Get(context.Background(), types.NamespacedName{Namespace: "foo", Name: "bar"}, &dep); err != nil {
@@ -283,6 +284,58 @@ func TestHandler_SetReplicas(t *testing.T) {
 				if tt.wantReplicas != nil {
 					tt.wantReplicas(t, fakeClient)
 				}
+			}
+		})
+	}
+}
+
+func TestHandler_SetReplicasPolicyDenied(t *testing.T) {
+	pol, err := policy.Load(true) // baked-in default: min 1, max 20
+	if err != nil {
+		t.Fatalf("load policy: %s", err)
+	}
+
+	cases := []struct {
+		name     string
+		desired  int32
+		wantCode codes.Code
+		// wantAnnotation true means the request should have been accepted and
+		// written the annotation; false means denied with no write.
+	}{
+		{"within bounds accepted", 10, codes.OK},
+		{"1000 with max 20 denied (FailedPrecondition)", 1000, codes.FailedPrecondition},
+		{"below min denied", 0, codes.FailedPrecondition},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeClient := fake.NewClientBuilder().
+				WithRuntimeObjects(newDeployment("foo", "bar", 1, "", 1, 1)).
+				Build()
+			ready := &atomic.Bool{}
+			ready.Store(true)
+			h := &handler{client: fakeClient, ready: ready, policy: pol}
+
+			_, err := h.SetReplicas(context.Background(), &v1.SetReplicasCountRequest{
+				Namespace: "foo",
+				Name:      "bar",
+				Desired:   tc.desired,
+			})
+			if status.Code(err) != tc.wantCode {
+				t.Fatalf("expected code %v, got %v (%v)", tc.wantCode, status.Code(err), err)
+			}
+
+			// Verify whether the annotation was written.
+			var dep appsv1.Deployment
+			if err := fakeClient.Get(context.Background(), types.NamespacedName{Namespace: "foo", Name: "bar"}, &dep); err != nil {
+				t.Fatal(err)
+			}
+			_, gotAnnot := dep.Annotations[AnnotationKey]
+			if tc.wantCode == codes.OK && !gotAnnot {
+				t.Fatalf("expected annotation to be written, but it was not")
+			}
+			if tc.wantCode == codes.FailedPrecondition && gotAnnot {
+				t.Fatalf("denied request must not write the annotation")
 			}
 		})
 	}

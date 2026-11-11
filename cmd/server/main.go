@@ -8,13 +8,14 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/go-logr/logr"
 	"github.com/mochacat/replica-manager/controller"
 	"github.com/mochacat/replica-manager/internal"
+	"github.com/mochacat/replica-manager/internal/policy"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"github.com/go-logr/logr"
 )
 
 func main() {
@@ -46,8 +47,25 @@ func main() {
 		return
 	}
 
+	// Optional replica policy. It's baked into the image, so enabling it in an
+	// image/deployment makes bounds tamper-resistant (nothing in-cluster can
+	// modify them). Disabled by default unless REPLICA_POLICY_ENABLED is set.
+	policyEnabled := os.Getenv("REPLICA_POLICY_ENABLED") == "true"
+	pol, err := policy.Load(policyEnabled)
+	if err != nil {
+		// Fail-fast: never run a "secure" mode without a working policy.
+		slog.Error("Failed to load policy; refusing to start", "error", err)
+		return
+	}
+	if pol != nil && policyEnabled {
+		slog.Info("Replica policy enabled")
+	} else {
+		slog.Info("Replica policy disabled (set REPLICA_POLICY_ENABLED=true to enable)")
+	}
+
 	if err := (&controller.DeploymentReconciler{
 		Client: mgr.GetClient(),
+		Policy: pol,
 	}).SetupWithManager(mgr); err != nil {
 		slog.Error("Failed to register reconciler", "error", err)
 		return
@@ -78,7 +96,7 @@ func main() {
 	ready.Store(true)
 
 	go func() {
-		if err := internal.Start(ctx, mgr.GetClient(), &ready); err != nil {
+		if err := internal.Start(ctx, mgr.GetClient(), &ready, pol); err != nil {
 			slog.Error("gRPC server exited", "error", err)
 			cancel()
 		}

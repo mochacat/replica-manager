@@ -30,6 +30,14 @@ namespace: default
 rbac:
   create: true
 
+# Optional replica policy guardrail.
+#
+# When enabled (and the image has policy baked in), both the gRPC handler and
+# the reconciler refuse replica counts the policy denies (e.g. desired above
+# the baked-in max). Set to false to disable policy for a given environment.
+policy:
+  enabled: true
+
 # Integration test settings (used by test-job.yaml)
 integration:
   image:

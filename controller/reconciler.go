@@ -8,6 +8,9 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/mochacat/replica-manager/internal/policy"
 )
 
 // AnnotationKey is the annotation on Deployments that stores the desired replica count.
@@ -34,6 +37,11 @@ func desiredFromAnnotation(dep *appsv1.Deployment) (int32, bool) {
 // desired replica count as stored in the replicamanager/replicas annotation.
 type DeploymentReconciler struct {
 	client.Client
+	// Policy is an optional guardrail. When non-nil, the reconciler refuses to
+	// apply a desired count the policy denies — this is the tamper-proof
+	// backstop against annotation edits that bypass the gRPC API. When nil,
+	// policy enforcement is disabled and the reconciler behaves as before.
+	Policy *policy.Policy
 }
 
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;patch
@@ -59,6 +67,36 @@ func (r *DeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	if current == desired {
 		return ctrl.Result{}, nil
+	}
+
+	// Optional policy guardrail: if the reconcile target is one the policy
+	// denies, refuse to patch spec.replicas. This is the security backstop —
+	// it runs on every reconcile, so even an annotation that bypassed the gRPC
+	// handler (e.g. kubectl annotate / a compromised writer) is caught here.
+	// Above-max is strictly refused (never clamped) so an absurd value such as
+	// 1000 never materializes; below-min is likewise refused rather than
+	// force-raised (which could fight a legitimate scale-down).
+	if r.Policy != nil {
+		res, err := r.Policy.Evaluate(ctx, policy.Input{
+			Namespace: dep.Namespace,
+			Name:      dep.Name,
+			Desired:   desired,
+			Current:   current,
+		})
+		if err != nil {
+			// Fail closed: do not scale without a working policy.
+			log.FromContext(ctx).
+				Error(err, "policy evaluation failed, refusing to reconcile Deployment",
+					"namespace", dep.Namespace, "name", dep.Name, "desired", desired)
+			return ctrl.Result{}, nil
+		}
+		if !res.Allowed {
+			log.FromContext(ctx).
+				Info("reconcile refused by policy (spec.replicas left untouched)",
+					"namespace", dep.Namespace, "name", dep.Name,
+					"desired", desired, "current", current, "reason", res.Reason)
+			return ctrl.Result{}, nil
+		}
 	}
 
 	patch := client.MergeFrom(dep.DeepCopy())
