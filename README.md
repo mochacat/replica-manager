@@ -1,5 +1,7 @@
 # Kubernetes Replica Manager
 
+![Infrastructure blueprint](replica-manager.png)
+
 A secure gRPC control plane for declarative Kubernetes scaling — manages
 Deployment replica counts via annotation-based desired state with a
 controller-runtime reconciler.
